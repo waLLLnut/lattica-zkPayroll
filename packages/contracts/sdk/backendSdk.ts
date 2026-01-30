@@ -18,12 +18,7 @@ export function createBackendSdk(
       const { Noir } = await import("@noir-lang/noir_js");
       const circuit = await compiledCircuits.rollup;
       const noir = new Noir(circuit);
-      const backend = process.env.CI
-        ? new UltraHonkBackend(circuit.bytecode, { threads: os.cpus().length })
-        : (new NativeUltraHonkBackend(
-            `${process.env.HOME}/.bb/bb`,
-            circuit,
-          ) as unknown as UltraHonkBackend);
+      const backend = new UltraHonkBackend(circuit.bytecode, { threads: os.cpus().length });
       return { circuit, noir, backend };
     }),
   });

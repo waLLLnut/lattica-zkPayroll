@@ -79,6 +79,7 @@ const config: HardhatUserConfig = {
       hardhat: 0,
       localhost: 0,
       baseSepolia: `privatekey://${envConfig.DEPLOYER_PRIVATE_KEY}`,
+      mantleSepolia: `privatekey://${envConfig.DEPLOYER_PRIVATE_KEY}`,
     },
   },
   mocha: {

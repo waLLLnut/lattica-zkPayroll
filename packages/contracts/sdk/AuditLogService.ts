@@ -35,7 +35,36 @@ export interface OptimisticAuditEntry {
  * - Off-chain: Full RLWE ciphertext via RlweAuditChallenge + IPFS
  */
 export class AuditLogService {
-  constructor(readonly poolContract: PoolERC20) {}
+  private fromBlock?: number;
+
+  constructor(readonly poolContract: PoolERC20, fromBlock?: number) {
+    this.fromBlock = fromBlock ?? (process.env.POOL_DEPLOY_BLOCK ? parseInt(process.env.POOL_DEPLOY_BLOCK) : undefined);
+  }
+
+  private async paginatedQueryFilter(filter: any) {
+    if (!this.fromBlock) {
+      return this.poolContract.queryFilter(filter);
+    }
+    const provider = this.poolContract.runner?.provider;
+    if (!provider) return this.poolContract.queryFilter(filter);
+    const latestBlock = await provider.getBlockNumber();
+    const results: any[] = [];
+    const CHUNK = 1024;
+    for (let from = this.fromBlock; from <= latestBlock; from += CHUNK) {
+      const to = Math.min(from + CHUNK - 1, latestBlock);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const events = await this.poolContract.queryFilter(filter, from, to);
+          results.push(...events);
+          break;
+        } catch (e: any) {
+          if (attempt === 2) throw e;
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+    }
+    return results;
+  }
 
   /**
    * Query audit log by nullifier from UnshieldAuditLog event
@@ -43,7 +72,7 @@ export class AuditLogService {
    */
   async queryAuditLog(nullifier: string): Promise<OptimisticAuditEntry | null> {
     const filter = this.poolContract.filters.UnshieldAuditLog(nullifier);
-    const events = await this.poolContract.queryFilter(filter);
+    const events = await this.paginatedQueryFilter(filter);
 
     if (events.length === 0) {
       return null;
@@ -51,10 +80,10 @@ export class AuditLogService {
 
     const event = events[0]!;
     return {
-      nullifier: event.args.nullifier,
-      waCommitment: event.args.waCommitment,
-      blockNumber: event.blockNumber,
-      transactionHash: event.transactionHash,
+      nullifier: (event as any).args.nullifier,
+      waCommitment: (event as any).args.waCommitment,
+      blockNumber: (event as any).blockNumber,
+      transactionHash: (event as any).transactionHash,
     };
   }
 
@@ -64,9 +93,9 @@ export class AuditLogService {
    */
   async getAllAuditLogs(): Promise<OptimisticAuditEntry[]> {
     const filter = this.poolContract.filters.UnshieldAuditLog();
-    const events = await this.poolContract.queryFilter(filter);
+    const events = await this.paginatedQueryFilter(filter);
 
-    return events.map((event) => ({
+    return events.map((event: any) => ({
       nullifier: event.args.nullifier,
       waCommitment: event.args.waCommitment,
       blockNumber: event.blockNumber,

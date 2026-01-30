@@ -1,26 +1,32 @@
-import { Aes128Gcm, CipherSuite, HkdfSha256 } from "@hpke/core";
-import { DhkemX25519HkdfSha256, X25519 } from "@hpke/dhkem-x25519";
 import { utils } from "@repo/utils";
 import { ethers } from "ethers";
 import { assert } from "ts-essentials";
 
 // TODO(security): Constrain encryption and nuke this service.
 export class EncryptionService {
-  #suite: CipherSuite;
+  #suite: any;
 
-  private constructor() {
-    this.#suite = new CipherSuite({
-      kem: new DhkemX25519HkdfSha256(),
-      kdf: new HkdfSha256(),
-      aead: new Aes128Gcm(),
-    });
-  }
+  private constructor() {}
 
   static getSingleton = utils.lazyValue(() => new EncryptionService());
 
+  async #ensureSuite() {
+    if (!this.#suite) {
+      const { Aes128Gcm, CipherSuite, HkdfSha256 } = await import("@hpke/core");
+      const { DhkemX25519HkdfSha256 } = await import("@hpke/dhkem-x25519");
+      this.#suite = new CipherSuite({
+        kem: new DhkemX25519HkdfSha256(),
+        kdf: new HkdfSha256(),
+        aead: new Aes128Gcm(),
+      });
+    }
+    return this.#suite;
+  }
+
   async encrypt(publicKey: ethers.BytesLike, messageBytes: ethers.BytesLike) {
+    const suite = await this.#ensureSuite();
     const importedPublicKey = await this.#importPublicKey(publicKey);
-    const sender = await this.#suite.createSenderContext({
+    const sender = await suite.createSenderContext({
       recipientPublicKey: importedPublicKey,
     });
     const enc = new Uint8Array(sender.enc);
@@ -33,9 +39,10 @@ export class EncryptionService {
   }
 
   async decrypt(privateKey: ethers.BytesLike, ciphertext: ethers.BytesLike) {
+    const suite = await this.#ensureSuite();
     const importedPrivateKey = await this.#importPrivateKey(privateKey);
     ciphertext = ethers.getBytes(ciphertext);
-    const recipient = await this.#suite.createRecipientContext({
+    const recipient = await suite.createRecipientContext({
       recipientKey: importedPrivateKey,
       enc: ciphertext.subarray(0, ECC_LEN),
     });
@@ -44,17 +51,20 @@ export class EncryptionService {
   }
 
   async derivePublicKey(privateKey: ethers.BytesLike) {
+    const suite = await this.#ensureSuite();
+    const { X25519 } = await import("@hpke/dhkem-x25519");
     const importedPrivateKey = await this.#importPrivateKey(privateKey);
-    const publicKey = await new X25519(this.#suite.kdf).derivePublicKey(
+    const publicKey = await new X25519(suite.kdf).derivePublicKey(
       importedPrivateKey,
     );
     return ethers.hexlify(
-      new Uint8Array(await this.#suite.kem.serializePublicKey(publicKey)),
+      new Uint8Array(await suite.kem.serializePublicKey(publicKey)),
     );
   }
 
   async #importPrivateKey(privateKey: ethers.BytesLike) {
-    return await this.#suite.kem.importKey(
+    const suite = await this.#ensureSuite();
+    return await suite.kem.importKey(
       "raw",
       ethers.getBytes(privateKey),
       false, // isPublic
@@ -62,7 +72,8 @@ export class EncryptionService {
   }
 
   async #importPublicKey(publicKey: ethers.BytesLike) {
-    return await this.#suite.kem.importKey(
+    const suite = await this.#ensureSuite();
+    return await suite.kem.importKey(
       "raw",
       ethers.getBytes(publicKey),
       true, // isPublic

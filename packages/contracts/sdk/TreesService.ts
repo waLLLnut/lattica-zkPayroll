@@ -14,7 +14,32 @@ import {
 } from "./PoolErc20Service";
 
 export class TreesService {
-  constructor(private contract: PoolERC20) {}
+  constructor(private contract: PoolERC20, private fromBlock?: number) {}
+
+  private async paginatedQueryFilter<T>(filter: any): Promise<T[]> {
+    if (!this.fromBlock) {
+      return this.contract.queryFilter(filter) as Promise<T[]>;
+    }
+    const provider = this.contract.runner?.provider;
+    if (!provider) return this.contract.queryFilter(filter) as Promise<T[]>;
+    const latestBlock = await provider.getBlockNumber();
+    const results: T[] = [];
+    const CHUNK = 1024;
+    for (let from = this.fromBlock; from <= latestBlock; from += CHUNK) {
+      const to = Math.min(from + CHUNK - 1, latestBlock);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const events = await this.contract.queryFilter(filter, from, to);
+          results.push(...(events as T[]));
+          break;
+        } catch (e: any) {
+          if (attempt === 2) throw e;
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+    }
+    return results;
+  }
 
   getTreeRoots = z
     .function()
@@ -89,7 +114,7 @@ export class TreesService {
   async #getNoteHashTree() {
     const { Fr } = await import("@aztec/aztec.js");
     const noteHashes = sortEventsWithIndex(
-      await this.contract.queryFilter(this.contract.filters.NoteHashes()),
+      await this.paginatedQueryFilter(this.contract.filters.NoteHashes()),
     ).map((x) => x.noteHashes);
 
     const noteHashTree = await createMerkleTree(NOTE_HASH_TREE_HEIGHT);
@@ -106,7 +131,7 @@ export class TreesService {
     const { Fr } = await import("@aztec/aztec.js");
 
     const nullifiers = sortEventsWithIndex(
-      await this.contract.queryFilter(this.contract.filters.Nullifiers()),
+      await this.paginatedQueryFilter(this.contract.filters.Nullifiers()),
     ).map((x) => x.nullifiers.map((n) => new Fr(BigInt(n))));
 
     // add 1 to the nullifier tree, so it's possible to add new nullifiers to it(adding requires a non-zero low leaf)

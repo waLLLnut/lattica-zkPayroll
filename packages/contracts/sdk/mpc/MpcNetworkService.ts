@@ -1,11 +1,10 @@
-import { UltraHonkBackend } from "@aztec/bb.js";
+import type { UltraHonkBackend } from "@aztec/bb.js";
 import type { CompiledCircuit } from "@noir-lang/noir_js";
 import { utils } from "@repo/utils";
 import { ethers } from "ethers";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import PQueue, { type QueueAddOptions } from "p-queue";
 import { promiseWithResolvers } from "../utils";
 import { inWorkingDir, makeRunCommand, splitInput } from "./utils";
 
@@ -37,7 +36,14 @@ export class MpcProverService {
 
 class MpcProverPartyService {
   #storage: Map<OrderId, Order> = new Map();
-  #queue = new PQueue({ concurrency: 1 });
+  #queue: any = null;
+  async #getQueue() {
+    if (!this.#queue) {
+      const { default: PQueue } = await import("p-queue");
+      this.#queue = new PQueue({ concurrency: 1 });
+    }
+    return this.#queue;
+  }
 
   constructor(readonly partyIndex: PartyIndex) {}
 
@@ -62,7 +68,7 @@ class MpcProverPartyService {
     // add this order to other order's queue
     // TODO(perf): this is O(N^2) but we should do better
     for (const otherOrder of this.#storage.values()) {
-      this.#addOrdersToQueue({
+      await this.#addOrdersToQueue({
         orderAId: order.id,
         orderBId: otherOrder.id,
         circuit: params.circuit,
@@ -72,12 +78,13 @@ class MpcProverPartyService {
     return await order.result.promise;
   }
 
-  #addOrdersToQueue(params: {
+  async #addOrdersToQueue(params: {
     orderAId: OrderId;
     orderBId: OrderId;
     circuit: CompiledCircuit;
   }) {
-    const options: QueueAddOptions = {
+    const queue = await this.#getQueue();
+    const options = {
       throwOnTimeout: true,
       // this is a hack to enforce the order of execution matches across all MPC parties
       priority: Number(
@@ -86,7 +93,7 @@ class MpcProverPartyService {
         ) % BigInt(Number.MAX_SAFE_INTEGER),
       ),
     };
-    this.#queue.add(async () => {
+    queue.add(async () => {
       await utils.sleep(500); // just to make sure all parties got the order over network
       const orderA = this.#storage.get(params.orderAId);
       const orderB = this.#storage.get(params.orderBId);

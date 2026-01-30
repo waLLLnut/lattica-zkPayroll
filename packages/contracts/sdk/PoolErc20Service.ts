@@ -1,6 +1,7 @@
 import type { Fr } from "@aztec/aztec.js";
 import type { UltraHonkBackend } from "@aztec/bb.js";
-import { poseidon2Hash as aztecPoseidon2Hash } from "@aztec/foundation/crypto";
+// Dynamic import to avoid ESM/CJS conflict with hardhat
+// import { poseidon2Hash as aztecPoseidon2Hash } from "@aztec/foundation/crypto";
 import type { CompiledCircuit, Noir } from "@noir-lang/noir_js";
 import { utils } from "@repo/utils";
 import { ethers } from "ethers";
@@ -131,7 +132,7 @@ export class PoolErc20Service {
 
     // __LatticA__: Compute wa_commitment for audit proof linking
     const waAddress = await CompleteWaAddress.fromSecretKey(secretKey);
-    const waCommitment = await computeWaCommitment(waAddress.address);
+    const waCommitment = await computeWaCommitment(waAddress);
 
     const unshieldCircuit = (await this.circuits).unshield;
     const input = {
@@ -328,7 +329,7 @@ export class PoolErc20Service {
   private async getEmittedNotes(secretKey: string) {
     const { address } = await CompleteWaAddress.fromSecretKey(secretKey);
     const encrypted = sortEvents(
-      await this.contract.queryFilter(this.contract.filters.EncryptedNotes()),
+      await paginatedQueryFilter(this.contract, this.contract.filters.EncryptedNotes()),
     )
       .map((e) => e.args.encryptedNotes.map((note) => note.encryptedNote))
       .flat();
@@ -396,8 +397,11 @@ export class Erc20Note {
 
   async serialize(): Promise<bigint[]> {
     const amount = await this.amount.toNoir();
+    // Must match Noir's Erc20Note.serialize(): [owner.x, owner.y, token, amount, randomness]
+    const waCoords = this.owner.getWaCoords();
     return [
-      BigInt(this.owner.address),
+      BigInt(waCoords.x),
+      BigInt(waCoords.y),
       BigInt(this.amount.token),
       // ...amount.amount.limbs.map((x) => BigInt(x)),
       BigInt(amount.amount.value),
@@ -409,18 +413,28 @@ export class Erc20Note {
     fields: bigint[],
     publicKey: string,
   ): Promise<Erc20Note> {
+    // fields: [owner.x, owner.y, token, amount, randomness]
     const fieldsStr = fields.map((x) => ethers.toBeArray(x));
+    const waX = bigIntToHex(fields[0]!);
+    const waY = bigIntToHex(fields[1]!);
+    const waCoords: WaAddressCoords = { x: waX, y: waY };
+    const waCommitment = await poseidon2Hash([
+      GENERATOR_INDEX__WA_ADDRESS,
+      fields[0]!,
+      fields[1]!,
+    ]);
     return await Erc20Note.from({
       owner: new CompleteWaAddress(
-        ethers.zeroPadValue(fieldsStr[0]!, 32),
+        waCommitment.toString(),
         publicKey,
+        waCoords,
       ),
       amount: await TokenAmount.from({
-        token: ethers.zeroPadValue(fieldsStr[1]!, 20),
-        // amount: fromNoirU256({ limbs: fields.slice(2, 2 + U256_LIMBS) }),
-        amount: ethers.toBigInt(fieldsStr[2]!),
+        token: ethers.zeroPadValue(fieldsStr[2]!, 20),
+        // amount: fromNoirU256({ limbs: fields.slice(3, 3 + U256_LIMBS) }),
+        amount: ethers.toBigInt(fieldsStr[3]!),
       }),
-      randomness: ethers.zeroPadValue(fieldsStr[3]!, 32),
+      randomness: ethers.zeroPadValue(fieldsStr[4]!, 32),
     });
   }
 
@@ -447,7 +461,7 @@ export class Erc20Note {
 
   static async empty() {
     return await Erc20Note.from({
-      owner: new CompleteWaAddress(ethers.ZeroHash, ethers.ZeroHash),
+      owner: new CompleteWaAddress(ethers.ZeroHash, ethers.ZeroHash, { x: ethers.ZeroHash, y: ethers.ZeroHash }),
       amount: await TokenAmount.empty(),
       randomness: ethers.ZeroHash,
     });
@@ -638,7 +652,34 @@ export type NoirAndBackend = {
 export async function poseidon2Hash(inputs: (bigint | string | number)[]) {
   const { Fr } = await import("@aztec/aztec.js");
   const frInputs = inputs.map((x) => new Fr(BigInt(x)));
+  const { poseidon2Hash: aztecPoseidon2Hash } = await import("@aztec/foundation/crypto");
   return await aztecPoseidon2Hash(frInputs);
+}
+
+async function paginatedQueryFilter<T>(contract: any, filter: any): Promise<T[]> {
+  const fromBlock = process.env.POOL_DEPLOY_BLOCK ? parseInt(process.env.POOL_DEPLOY_BLOCK) : undefined;
+  if (!fromBlock) {
+    return contract.queryFilter(filter) as Promise<T[]>;
+  }
+  const provider = contract.runner?.provider;
+  if (!provider) return contract.queryFilter(filter) as Promise<T[]>;
+  const latestBlock = await provider.getBlockNumber();
+  const results: T[] = [];
+  const CHUNK = 1024;
+  for (let from = fromBlock; from <= latestBlock; from += CHUNK) {
+    const to = Math.min(from + CHUNK - 1, latestBlock);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const events = await contract.queryFilter(filter, from, to);
+        results.push(...(events as T[]));
+        break;
+      } catch (e: any) {
+        if (attempt === 2) throw e;
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+  }
+  return results;
 }
 
 function sortEvents<
