@@ -1,5 +1,3 @@
-<img align="right" width="150" height="150" src="https://i.ibb.co/4ZFHPTNc/411361781-c80982e6-103e-45b0-8bd1-b6c38c5debe5-Large.jpg">
-
 # LatticA: Auditable Dark Pool
 
 LatticA is a privacy-preserving payroll and transaction system built on an auditable dark pool. It is a fork of [nemi-fi/mezcal](https://github.com/nemi-fi/mezcal), enhanced with an **RLWE-based audit module** to meet regulatory compliance requirements without sacrificing user privacy.
